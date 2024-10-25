@@ -33,6 +33,7 @@ def input2action(device, controller_type="OSC_POSE", robot_name="Panda", gripper
 
             grasp = 1 if grasp else -1
             action = np.concatenate([dpos, drotation, [grasp] * gripper_dof])
+            action = np.clip(action, -1, 1)
 
         if controller_type == "OSC_YAW":
             drotation[2] = -drotation[2]

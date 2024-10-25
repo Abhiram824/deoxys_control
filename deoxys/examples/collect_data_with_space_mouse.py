@@ -10,8 +10,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from rpl_vision_utils.networking.camera_redis_interface import \
+from deoxys_vision.networking.camera_redis_interface import \
     CameraRedisSubInterface
+from deoxys_vision.utils.camera_utils import get_camera_info
+from deoxys.experimental.motion_utils import reset_joints_to
+
 
 from deoxys import config_root
 from deoxys.franka_interface import FrankaInterface
@@ -35,7 +38,7 @@ def parse_args():
     parser.add_argument(
         "--product_id",
         type=int,
-        default=50734,
+        default=50741,
     )
     robot_config_parse_args(parser)
     return parser.parse_args()
@@ -68,11 +71,12 @@ def main():
 
     # Franka Interface
     robot_interface = FrankaInterface(os.path.join(config_root, args.interface_cfg))
+    
 
-    camera_ids = [0, 1]
+    camera_ids = ["rs_0", "zed_0", "zed_1"]
     cr_interfaces = {}
     for camera_id in camera_ids:
-        cr_interface = CameraRedisSubInterface(camera_id=camera_id)
+        cr_interface = CameraRedisSubInterface(camera_info=get_camera_info(camera_id), redis_host="127.0.0.1")
         cr_interface.start()
         cr_interfaces[camera_id] = cr_interface
 
@@ -90,10 +94,19 @@ def main():
     start = False
 
     previous_state_dict = None
-
+    reset_joint_positions = [
+        0.09162008114028396,
+        -0.19826458111314524,
+        -0.01990020486871322,
+        -2.4732269941140346,
+        -0.01307073642274261,
+        2.30396583422025,
+        0.8480939705504309,
+    ] 
+    reset_joints_to(robot_interface, np.array(reset_joint_positions), gripper_open=True)
     time.sleep(2)
-
-    while i < 2000:
+    print("Start teleoperation")
+    while True:
         i += 1
         start_time = time.time_ns()
         action, grasp = input2action(
@@ -108,6 +121,16 @@ def main():
             action[3:5] = 0.0
         elif controller_type == "OSC_POSITION":
             action[3:6] = 0.0
+        assert len(robot_interface._state_buffer) > 0, "state buffer should be initialized since we reset joints!"
+        # assert actions are in between 1 and -1
+        assert np.all(action <= 1) and np.all(action >= -1), "actions should be in between 1 and -1, got action: {}".format(action)
+        if np.linalg.norm(action[:-1]) < 1e-3 and not start:
+            continue
+        last_state = robot_interface._state_buffer[-1]
+        last_gripper_state = robot_interface._gripper_state_buffer[-1]
+        for camera_id in camera_ids:
+            img = cr_interfaces[camera_id].get_img()
+            data[f"camera_{camera_id}"].append(img["color"])
 
         robot_interface.control(
             controller_type=controller_type,
@@ -115,12 +138,6 @@ def main():
             controller_cfg=controller_cfg,
         )
 
-        if len(robot_interface._state_buffer) == 0:
-            continue
-        last_state = robot_interface._state_buffer[-1]
-        last_gripper_state = robot_interface._gripper_state_buffer[-1]
-        if np.linalg.norm(action[:-1]) < 1e-3 and not start:
-            continue
 
         start = True
         # print(action.shape)
@@ -152,15 +169,14 @@ def main():
         # data["gripper_states"].append(np.array(last_gripper_state.width))
         # Get img info
 
-        for camera_id in camera_ids:
-            img_info = cr_interfaces[camera_id].get_img_info()
-            data[f"camera_{camera_id}"].append(img_info)
+        
 
         # TODO: Test if we can directly save img (probably not)
         # img = cr_interface.get_img()
 
         end_time = time.time_ns()
         print(f"Time profile: {(end_time - start_time) / 10 ** 9}")
+    reset_joints_to(robot_interface, np.array(reset_joint_positions), gripper_open=True)
     os.makedirs(folder, exist_ok=True)
     with open(f"{folder}/config.json", "w") as f:
         config_dict = {
@@ -179,6 +195,10 @@ def main():
         )
 
     for camera_id in camera_ids:
+        if len(data[f"camera_{camera_id}"]) != len(data["action"]):
+            print("camera has one extra image")
+            del data[f"camera_{camera_id}"][-1]
+        assert len(data[f"camera_{camera_id}"]) == len(data["action"]), "images not matched up with actions"
         np.savez(
             f"{folder}/testing_demo_camera_{camera_id}",
             data=np.array(data[f"camera_{camera_id}"]),
@@ -198,6 +218,8 @@ def main():
         import shutil
 
         shutil.rmtree(f"{folder}")
+    else:
+        print(f"saved to {folder}")
 
 
 if __name__ == "__main__":

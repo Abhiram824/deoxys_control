@@ -9,6 +9,9 @@ traj_interpolator_cfg:
 Kp:
   translation: 150.0
   rotation: 250.0
+  # tuned gains
+  # translation: 350.0
+  # rotation: 150.0
 
 action_scale:
   translation: 0.05
